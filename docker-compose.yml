@@ -1,0 +1,125 @@
+# ────────────────────────────────────────────────────────────────────────────
+# CONNECTONGS — Docker Compose
+# Computação Paralela e Distribuída — Fase 2
+#
+# Configuração em: .env  →  edite TOTAL_REQUESTS (1 a 1000)
+#
+# Arquitetura:
+#   seed     : semeia o banco com 1000 usuários (roda 1× e sai)
+#   api      : API HTTP — ThreadingHTTPServer + Semaphore + Lock + SQLite WAL
+#   worker_1 : serial          — sua fatia de TOTAL_REQUESTS/4 requisições
+#   worker_2 : serial          — sua fatia de TOTAL_REQUESTS/4 requisições
+#   worker_3 : concorrente (5 threads)  — sua fatia
+#   worker_4 : concorrente (10 threads) — sua fatia
+#
+# Comandos:
+#   docker compose up --build          # roda benchmark completo
+#   docker compose logs -f             # acompanha em tempo real
+#   docker compose logs --no-color > resultado.txt  # salva resultado
+#   docker compose down -v             # encerra e apaga volumes
+# ────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Seed: cria 1000 usuários no banco (roda uma vez e sai) ────────────────
+  seed:
+    build: .
+    container_name: connectongs_seed
+    entrypoint: ["python", "seed_database.py", "--reset"]
+    environment:
+      - CONNECTONGS_DB=/data/connectongs.db
+    volumes:
+      - db_data:/data
+    restart: "no"
+
+  # ── API Server: recebe todas as requisições dos workers ───────────────────
+  api:
+    build: .
+    container_name: connectongs_api
+    environment:
+      - ROLE=api
+      - API_PORT=8080
+      - CONNECTONGS_DB=/data/connectongs.db
+    volumes:
+      - db_data:/data
+    ports:
+      - "8080:8080"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  # ── Worker 1 — Serial ─────────────────────────────────────────────────────
+  worker_1:
+    build: .
+    container_name: connectongs_worker_1
+    environment:
+      - ROLE=worker
+      - API_URL=http://api:8080
+      - WORKER_ID=1
+      - TOTAL_WORKERS=4
+      - TOTAL_REQUESTS=${TOTAL_REQUESTS:-100}
+      - MODE=${MODE_SERIAL:-serial}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Worker 2 — Serial ─────────────────────────────────────────────────────
+  worker_2:
+    build: .
+    container_name: connectongs_worker_2
+    environment:
+      - ROLE=worker
+      - API_URL=http://api:8080
+      - WORKER_ID=2
+      - TOTAL_WORKERS=4
+      - TOTAL_REQUESTS=${TOTAL_REQUESTS:-100}
+      - MODE=${MODE_SERIAL:-serial}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Worker 3 — Concorrente ────────────────────────────────────────────────
+  worker_3:
+    build: .
+    container_name: connectongs_worker_3
+    environment:
+      - ROLE=worker
+      - API_URL=http://api:8080
+      - WORKER_ID=3
+      - TOTAL_WORKERS=4
+      - TOTAL_REQUESTS=${TOTAL_REQUESTS:-100}
+      - MODE=${MODE_CONCURRENT:-concurrent}
+      - CONCURRENT_N=${CONCURRENT_N_W3:-5}
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # ── Worker 4 — Concorrente ────────────────────────────────────────────────
+  worker_4:
+    build: .
+    container_name: connectongs_worker_4
+    environment:
+      - ROLE=worker
+      - API_URL=http://api:8080
+      - WORKER_ID=4
+      - TOTAL_WORKERS=4
+      - TOTAL_REQUESTS=${TOTAL_REQUESTS:-100}
+      - MODE=${MODE_CONCURRENT:-concurrent}
+      - CONCURRENT_N=${CONCURRENT_N_W4:-10}
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db_data:
+    driver: local
