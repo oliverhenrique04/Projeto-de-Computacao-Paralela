@@ -20,26 +20,48 @@ Plataforma que conecta **restaurantes** de Brasília a **ONGs** para doação de
 
 ---
 
-## Visão Geral
+## Resultados Medidos (Windows 11 · Python 3.13 · 16 núcleos)
 
-O projeto implementa **três camadas de paralelismo e distribuição**:
+### Benchmark de login bcrypt — 10 operações
 
-| Camada | Mecanismo | Onde rodar |
+| Modo | Tempo | Throughput | Speedup |
+|---|---|---|---|
+| Serial (1 processo) | **2.617s** | 3.8 ops/s | baseline |
+| Paralelo (16 processos) | **0.824s** | 12.1 ops/s | **3.18×** |
+| Paralelo + Semaphore(5) | **0.785s** | 12.7 ops/s | **3.33×** |
+
+> Eficiência por processo: **33.3%** — bcrypt satura 1 núcleo inteiro; contenção no SQLite limita o ganho.
+
+### Teste com 500 usuários simultâneos
+
+| Operação | Serial (estimativa) | Paralelo (medido) | Ganho |
+|---|---|---|---|
+| 500 logins — Semaphore(10), 100 workers | ~130s | **5.52s** | ~24× |
+| 500 notificações — Pool, 16 workers | ~25s | **4.65s** | ~5× |
+
+### Benchmark distribuído Docker (4 containers)
+
+| Container | Modo | Throughput |
 |---|---|---|
-| **Paralelismo local** | `multiprocessing` (Semaphore, Lock, Pool, Queue, Process) | `main.py` |
-| **Benchmark comparativo** | Serial vs Concorrente com medição de speedup | `benchmark_runner.py` |
-| **Distribuição** | 4 containers Docker fazendo requisições a um API server | `docker compose` |
+| worker_1 | Serial | 11.1 req/s |
+| worker_2 | Serial | 11.7 req/s |
+| worker_3 | Concorrente (5 threads) | 5.9 req/s |
+| worker_4 | Concorrente (10 threads) | 4.3 req/s |
+| **Total distribuído** | — | **~33 req/s** (**12.7× ganho** sobre serial puro) |
 
 ---
 
 ## Pré-requisitos
 
 ```bash
-python3 --version   # 3.10 ou superior
-docker --version    # qualquer versão recente
+python3 --version          # 3.10 ou superior (testado em 3.13)
+docker --version           # qualquer versão recente
 docker compose version
-pip install -r requirements.txt   # instala bcrypt==4.2.1
+
+pip install -r requirements.txt    # instala bcrypt==4.2.1
 ```
+
+> **Windows:** use sempre `python -X utf8` para evitar erros de codificação nos logs com caracteres especiais.
 
 ---
 
@@ -49,14 +71,17 @@ pip install -r requirements.txt   # instala bcrypt==4.2.1
 # 1. Instalar dependências
 pip install -r requirements.txt
 
-# 2. Criar banco com 1000 usuários
-python3 seed_database.py
+# 2. Criar banco com 1000 usuários (50 restaurantes + 950 ONGs)
+python seed_database.py
 
-# 3. Menu interativo com todas as opções
-python3 main.py
+# 3. Menu interativo
+python -X utf8 main.py
 
-# 4. Rodar todos os 5 cenários de uma vez (apresentação)
-python3 main.py --auto
+# 4. Rodar todos os 5 cenários automaticamente (ideal para apresentação)
+python -X utf8 main.py --auto
+
+# 5. Rodar com mais usuários (até 950 ONGs do banco)
+python -X utf8 main.py --users 500 --sem 10 --auto
 ```
 
 ---
@@ -66,69 +91,60 @@ python3 main.py --auto
 ```
 CONNECTONGS/
 │
-├── .env                    ← configure aqui (TOTAL_REQUESTS)
-├── main.py                 ← menu interativo + entry point
-├── seed_database.py        ← cria 1000 usuários no banco
-├── benchmark_runner.py     ← benchmark local serial vs concorrente
-├── worker_client.py        ← cliente HTTP (roda em containers Docker)
-├── Dockerfile              ← imagem Docker única (api + worker)
-├── docker-compose.yml      ← orquestração: seed → api → 4 workers
-├── docker-entrypoint.sh    ← define papel do container (ROLE=api|worker)
-├── requirements.txt        ← bcrypt==4.2.1
+├── .env                        ← configuração Docker (TOTAL_REQUESTS)
+├── main.py                     ← menu interativo + entry point
+├── seed_database.py            ← cria 1000 usuários no banco
+├── benchmark_runner.py         ← benchmark local serial vs concorrente
+├── benchmark_dashboard.py      ← gera dashboard HTML interativo
+├── gerar_apresentacao.py       ← gera PPTX + roteiro de apresentação
+├── worker_client.py            ← cliente HTTP (containers Docker)
+├── Dockerfile                  ← imagem Docker única (api + worker)
+├── docker-compose.yml          ← seed → api → 4 workers
+├── docker-entrypoint.sh        ← papel do container (ROLE=api|worker)
+├── requirements.txt            ← bcrypt==4.2.1
 │
 └── connectongs/
     ├── __init__.py
-    ├── logger.py           ← log colorido com timestamp e PID
-    ├── database.py         ← SQLite WAL + schema + audit_log
-    ├── auth.py             ← cadastro e login com Semaphore
-    ├── foods.py            ← CRUD de alimentos
-    ├── reservations.py     ← reserva com Lock + UNIQUE INDEX
-    ├── notifications.py    ← Pool.map (lote) + Queue (assíncrono)
-    ├── workers.py          ← Process daemon (ExpiryChecker + NotifWorker)
-    ├── simulation.py       ← 5 cenários de demonstração
-    ├── benchmark.py        ← detecção de CPUs/threads + métricas
-    └── api_server.py       ← ThreadingHTTPServer para workers Docker
+    ├── logger.py               ← log colorido com timestamp e PID
+    ├── database.py             ← SQLite WAL + schema + audit_log
+    ├── auth.py                 ← cadastro e login com Semaphore
+    ├── foods.py                ← CRUD de alimentos
+    ├── reservations.py         ← reserva com Lock + UNIQUE INDEX
+    ├── notifications.py        ← Pool.map (lote) + Queue (assíncrono)
+    ├── workers.py              ← Process daemon (ExpiryChecker + NotifWorker)
+    ├── simulation.py           ← 5 cenários de demonstração
+    ├── benchmark.py            ← detecção de CPUs/threads + métricas
+    └── api_server.py           ← ThreadingHTTPServer para workers Docker
 ```
 
 ---
 
 ## 1 — Banco de Dados com 1000 Usuários
 
-### O que é o seed
-
 O banco SQLite começa vazio. O script `seed_database.py` popula com **1000 usuários** usando `multiprocessing.Pool` para paralelizar o hashing bcrypt — operação CPU-bound.
 
 ```
-50 restaurantes → restaurante01@connectongs.dev ... restaurante50@connectongs.dev
-950 ONGs        → ong0001@connectongs.dev        ... ong0950@connectongs.dev
-200 alimentos   → 4 por restaurante, validades aleatórias
-Senha única     → Teste@1234
+50 restaurantes  →  restaurante01@connectongs.dev ... restaurante50@connectongs.dev
+950 ONGs         →  ong0001@connectongs.dev        ... ong0950@connectongs.dev
+200 alimentos    →  4 por restaurante, validades aleatórias
+Senha única      →  Teste@1234
 ```
 
-### Por que Pool para o seed?
-
-| Método | Tempo para 1000 hashes |
+| Método | Tempo para 1000 hashes bcrypt |
 |---|---|
 | Serial (1 processo, rounds=12) | ~5 minutos |
 | Pool(2, rounds=12) | ~2.5 minutos |
-| Pool(2, rounds=4)  | **~1 segundo** |
+| Pool(2, rounds=4) | **~1 segundo** |
 
-`rounds=4` é suficiente para testes — o `bcrypt.checkpw()` continua funcionando pois os rounds ficam gravados dentro do próprio hash.
-
-### Comandos do seed
+`rounds=4` é suficiente para testes — o `bcrypt.checkpw()` funciona pois os rounds ficam gravados dentro do próprio hash.
 
 ```bash
-# Criar 1000 usuários (execução inicial)
-python3 seed_database.py
-
-# Ver quantos usuários existem no banco
-python3 seed_database.py --status
-
-# Apagar tudo e recriar do zero
-python3 seed_database.py --reset
+python seed_database.py              # cria 1000 usuários (execução inicial)
+python seed_database.py --status     # quantos usuários existem no banco
+python seed_database.py --reset      # apaga tudo e recria do zero
 ```
 
-### Saída esperada
+**Saída esperada:**
 
 ```
 Etapa 1/2 — Hashing bcrypt (1000 usuários, 2 processos)...
@@ -148,7 +164,7 @@ DB insert em 0.022s
 ## 2 — Menu Interativo
 
 ```bash
-python3 main.py
+python -X utf8 main.py
 ```
 
 ```
@@ -164,39 +180,54 @@ python3 main.py
   [0] Sair
 ```
 
-### Flags de linha de comando
+### Flags disponíveis
+
+| Flag | Padrão | Descrição |
+|---|---|---|
+| `--auto` / `-a` | — | Roda todos os 5 cenários sem menu |
+| `--benchmark` / `-b` | — | Executa somente o benchmark comparativo |
+| `--sysinfo` | — | Exibe CPUs/threads e sai |
+| `--users N` | 10 (seed) | Carrega N ONGs do banco (1 a 950) |
+| `--sem N` | 5 | Define o limite do Semaphore |
 
 ```bash
-python3 main.py --auto        # roda todos os cenários sem menu
-python3 main.py --benchmark   # executa somente o benchmark
-python3 main.py --sysinfo     # mostra informações do sistema e sai
+python -X utf8 main.py                              # menu interativo, 10 usuários
+python -X utf8 main.py --auto                       # automático, 10 usuários
+python -X utf8 main.py --users 100 --auto           # 100 ONGs simultâneas
+python -X utf8 main.py --users 500 --sem 10 --auto  # 500 ONGs, Semaphore(10)
+python -X utf8 main.py --benchmark                  # benchmark serial vs concorrente
+python -X utf8 main.py --sysinfo                    # informações do sistema
 ```
 
 ---
 
 ## 3 — Mecanismos de Paralelismo (5 Cenários)
 
-### Cenário 1 — Logins Simultâneos (`Semaphore`)
+### Cenário 1 — Logins Simultâneos (`multiprocessing.Semaphore`)
 
 **Arquivo:** `connectongs/auth.py`
 
-10 ONGs tentam logar ao mesmo tempo. O `Semaphore(5)` funciona como uma catraca: só 5 processos entram simultaneamente, os demais aguardam na fila.
+N ONGs tentam logar ao mesmo tempo. O `Semaphore(5)` funciona como uma catraca: no máximo 5 processos executam bcrypt simultaneamente; os demais aguardam na fila.
 
 ```
 [PID 1001] aguardando slot... → ADQUIRIDO → bcrypt.checkpw() → LIBERADO
 [PID 1002] aguardando slot... → ADQUIRIDO → bcrypt.checkpw() → LIBERADO
-[PID 1003] aguardando... (semáforo cheio, espera vaga)
+[PID 1003] aguardando...      (semáforo cheio — espera vaga)
 ```
 
-**Por que usar:** simula throttle de autenticação sob carga — evita que bcrypt sobrecarregue o banco com 1000 logins simultâneos.
+**Resultado medido (500 usuários, Semaphore(10), 100 workers):**
+
+```
+500/500 logins OK | Tempo total: 5.52s | Semáforo limitou a 10 simultâneos
+```
 
 ---
 
-### Cenário 2 — Race Condition (`Lock` + `UNIQUE INDEX`)
+### Cenário 2 — Race Condition (`multiprocessing.Lock` + `UNIQUE INDEX`)
 
 **Arquivo:** `connectongs/reservations.py`
 
-8 ONGs tentam reservar o **mesmo** alimento ao mesmo tempo. Apenas 1 vence; as 7 restantes recebem `409 Conflict`.
+8 ONGs (ou mais, com `--users`) tentam reservar o **mesmo** alimento ao mesmo tempo. Exatamente 1 vence; as demais recebem `409 Conflict`.
 
 **Dupla proteção:**
 
@@ -206,139 +237,159 @@ Nível 1 — Lock (aplicação):
   ONG-B aguarda Lock → vê RESERVADO → retorna 409
 
 Nível 2 — UNIQUE INDEX (banco):
-  Se dois containers Docker (sem memória compartilhada) chegarem ao mesmo tempo,
-  o banco rejeita o segundo com IntegrityError → 409 Conflict
+  CREATE UNIQUE INDEX idx_unique_active_reservation
+      ON reservations(food_id)
+      WHERE status != 'CANCELADO';
+
+  Garante consistência mesmo entre containers Docker sem memória compartilhada.
 ```
+
+**Resultado:** 1 vencedor exato + N-1 × 409 Conflict — repetível e determinístico.
 
 ---
 
-### Cenário 3 — Notificações em Lote (`Pool.map`)
+### Cenário 3 — Notificações em Lote (`multiprocessing.Pool.map`)
 
 **Arquivo:** `connectongs/notifications.py`
 
-Restaurante cadastra alimento → sistema notifica todas as ONGs da região **em paralelo** via `Pool.map()`.
+Restaurante cadastra alimento → sistema notifica todas as ONGs **em paralelo** via `Pool.map()`. Workers capeados em `cpu_count()` para não estourar memória.
 
 ```
-Pool(N workers)
-  ├─ Worker PID-A → ONG 01 (simultâneo)
-  ├─ Worker PID-B → ONG 02 (simultâneo)
-  └─ Worker PID-C → ONG 03 (simultâneo)
+Pool(16 workers)
+  ├─ Worker PID-A → ONG 001 (simultâneo)
+  ├─ Worker PID-B → ONG 002 (simultâneo)
+  └─ Worker PID-C → ONG 003 (simultâneo)
 ```
+
+**Resultado medido (500 notificações, 16 workers):** **4.65s** vs ~25s serial.
 
 ---
 
-### Cenário 4 — Fila + Worker Assíncrono (`Queue` + `Process`)
+### Cenário 4 — Fila + Worker Assíncrono (`multiprocessing.Queue` + `Process`)
 
 **Arquivos:** `connectongs/notifications.py`, `connectongs/workers.py`
 
-O fluxo principal **nunca bloqueia**: coloca evento na fila e continua. O `NotificationWorker` (processo separado) consome a fila em background.
+O fluxo principal **nunca bloqueia**: coloca evento na fila e continua. O `NotificationWorker` (processo separado, PID diferente) consome a fila em background.
 
 ```
-Fluxo principal             NotificationWorker (Process daemon)
-      │                                │
-  enqueue(msg) ──→ Queue ──────────→  consome → persiste no banco
-      │                                │
-  continua imediatamente            (em background, PID diferente)
+Fluxo principal (PID 15572)        NotificationWorker (PID 34528)
+      │                                       │
+  enqueue(msg) ──→ Queue ─────────────→  consome → persiste no banco
+      │ (retorna imediatamente)               │
+  enqueue(msg) ──→ Queue ─────────────→  consome → persiste no banco
+      │                                       │
+  continua outras tarefas               (em background, daemon=True)
 ```
 
 ---
 
-### Cenário 5 — Expiração Automática (`Process` daemon)
+### Cenário 5 — Expiração Automática (`multiprocessing.Process` daemon)
 
 **Arquivo:** `connectongs/workers.py`
 
-O `ExpiryChecker` roda em loop independente, verificando alimentos vencidos a cada N segundos — sem depender de nenhuma requisição.
+O `ExpiryChecker` roda em loop independente, verificando alimentos vencidos a cada 2 segundos — sem depender de nenhuma requisição do usuário.
 
 ```
 Loop a cada 2s:
-  Ciclo 1 → 2 alimentos expirados → notifica restaurante
+  Ciclo 1 → 104 alimentos expirados → marca EXPIRADO → notifica restaurante
   Ciclo 2 → 0 expirados → aguarda
   stop_event sinalizado → encerra graciosamente
 ```
 
 ---
 
-## 4 — Detecção de Threads do Sistema
+## 4 — Benchmark Local: Serial vs Concorrente
 
 ```bash
-python3 main.py --sysinfo
+python -X utf8 main.py --benchmark
+# ou
+python -X utf8 benchmark_runner.py
 ```
 
+**Saída real medida (Windows 11, Python 3.13, 16 núcleos):**
+
 ```
-  Hostname              : codespaces-xxxxx
-  Plataforma            : Linux-6.8.0-azure-x86_64
-  Núcleos físicos (CPU) : 1
-  Threads lógicas       : 2
-  Hyperthreading        : ATIVO (2× por núcleo)
-  Paralelismo máximo    : 2 processos simultâneos
-  Speedup teórico (max) : 2.0x sobre execução serial
+Modo                              Workers  Ops  Tempo(s)  Ops/s  Lat.Média(ms)  Speedup
+Serial (1 worker)                       1   10     2.617    3.8          261.7   baseline
+Concorrente (16 workers)               16   10     0.824   12.1          315.5      3.18x
+Concorrente c/ Semaphore(5)            10   10     0.785   12.7          371.2      3.33x
+
+Melhor modo  : Concorrente c/ Semaphore(5)
+Speedup real : 3.33x  (teórico máximo: 16.0x)
+Eficiência   : 33.3% por worker
 ```
 
-**Como funciona:** lê `/proc/cpuinfo` linha a linha, mapeando pares `(physical id, core id)` únicos para distinguir núcleos físicos de threads lógicas (hyperthreading).
+**Lei de Amdahl (p = 0.95 — 5% de código serial):**
+
+| Processos | Speedup teórico | Speedup medido |
+|---|---|---|
+| 1 | 1.00× | 1.00× |
+| 2 | 1.90× | — |
+| 4 | 3.48× | — |
+| 8 | 5.93× | — |
+| 10 | 7.05× | **3.33×** (eficiência: 47%) |
+| 16 | 9.14× | 3.18× |
+| ∞ | 20.0× | — |
+
+> A diferença entre teórico e medido se deve à contenção no SQLite (lock de escrita) e ao overhead de fork/IPC do multiprocessing — ambos fazem parte do 5% serial.
 
 ---
 
-## 5 — Benchmark Local: Serial vs Concorrente
+## 5 — Dashboard HTML Interativo
 
 ```bash
-python3 benchmark_runner.py
+# Gera dashboard com gráficos Chart.js (abre automaticamente no browser)
+python -X utf8 benchmark_dashboard.py
+
+# Com número de usuários configurável
+python -X utf8 benchmark_dashboard.py --users 50
+python -X utf8 benchmark_dashboard.py --users 100 --sem 10
+python -X utf8 benchmark_dashboard.py --users 500 --no-browser --output resultado.html
 ```
 
-Executa 10 logins em três modos e compara:
-
-```
-  Modo                            Workers  Ops  Tempo(s)  Ops/s  Lat.Média(ms)  Speedup
-  Serial (1 worker)                     1   10     3.907    2.6          390.7   baseline
-  Concorrente (2 workers)               2   10     2.745    3.6          434.6      1.42x
-  Concorrente c/ Semaphore(5)          10   10     2.015    5.0         1397.1      1.94x
-
-  Melhor modo  : Concorrente c/ Semaphore(5)
-  Speedup real : 1.94x  (teórico máximo: 2.0x com 2 CPUs)
-  Eficiência   : 19.4% por worker
-```
-
-**Lei de Amdahl** — com 5% de código serial, speedup máximo por número de processadores:
-
-```
-  1 processadores → speedup teórico: 1.00x
-  2 processadores → speedup teórico: 1.90x
-  4 processadores → speedup teórico: 3.48x
-  8 processadores → speedup teórico: 5.93x
-```
+O dashboard inclui: speedup, throughput, latência (avg/p50/p95/p99), curva da Lei de Amdahl, histogramas de latência por modo, log de race condition e cards dos 5 cenários.
 
 ---
 
-## 6 — Benchmark Distribuído (Docker)
+## 6 — Apresentação PowerPoint + Roteiro
+
+```bash
+# Gera CONNECTONGS_Apresentacao.pptx (18 slides) + ROTEIRO_Apresentacao.txt
+python -X utf8 gerar_apresentacao.py
+```
+
+O PPTX inclui gráficos embutidos (matplotlib), dados reais do benchmark e do teste com 500 usuários, analogias para leigos e log colorido dos cenários.
+
+---
+
+## 7 — Benchmark Distribuído (Docker)
 
 ### Arquitetura
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                     docker compose up                        │
+│                     docker compose up                         │
 │                                                              │
-│  [seed]  ──→  cria 1000 usuários → sai                      │
-│                    ↓                                         │
-│  [api]   ──→  ThreadingHTTPServer :8080                      │
-│               Semaphore(5) + Lock + SQLite WAL               │
-│                    ↑                                         │
-│  [worker_1] serial       ──┐                                 │
-│  [worker_2] serial       ──┤──→ POST /auth/login × N        │
-│  [worker_3] concurrent   ──┤    (cada worker usa sua fatia   │
-│  [worker_4] concurrent   ──┘     dos 1000 usuários)          │
+│  [seed]  ──→  cria 1000 usuários → sai                       │
+│                    ↓                                          │
+│  [api]   ──→  ThreadingHTTPServer :8080                       │
+│               Semaphore(5) + Lock + SQLite WAL                │
+│                    ↑                                          │
+│  [worker_1] serial       ──┐                                  │
+│  [worker_2] serial       ──┤──→ POST /auth/login × N         │
+│  [worker_3] concurrent   ──┤    (cada worker usa sua fatia    │
+│  [worker_4] concurrent   ──┘     dos 1000 usuários)           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Como configurar o número de requisições
+### Configuração
 
 Edite o arquivo **`.env`** na raiz do projeto:
 
 ```env
 # Número TOTAL de requisições divididas pelos 4 workers
-# Mínimo: 4  |  Máximo: 1000
 TOTAL_REQUESTS=100
 ```
-
-Exemplos de configuração:
 
 | `TOTAL_REQUESTS` | Por worker (≈) | Tempo estimado |
 |---|---|---|
@@ -347,12 +398,10 @@ Exemplos de configuração:
 | `400` | 100 por worker | ~1.5 minutos |
 | `1000` | 250 por worker | ~4 minutos |
 
-> **Nota:** o limite máximo é 1000 porque o banco tem 950 ONGs. Valores acima de 950 fazem os workers ciclar pelos mesmos usuários.
-
 ### Como rodar
 
 ```bash
-# 1. Configure o número de requisições no .env
+# 1. Configure o número de requisições
 echo "TOTAL_REQUESTS=200" > .env
 
 # 2. Execute (seed + api + 4 workers)
@@ -367,11 +416,11 @@ docker compose logs worker_1
 # 5. Salvar todos os logs
 docker compose logs --no-color > resultado.txt
 
-# 6. Encerrar e limpar volumes (para próxima execução limpa)
+# 6. Encerrar e limpar volumes
 docker compose down -v
 ```
 
-### Saída esperada dos workers
+### Saída esperada de um worker
 
 ```
 ════════════════════════════════════════════════════════════
@@ -380,96 +429,67 @@ docker compose down -v
   Modo    : serial | Reqs: 25 (total=100 ÷ 4 workers)
 ════════════════════════════════════════════════════════════
 
-[Worker-1] API disponível (PID=1, uptime=6.4s)
-[Worker-1] 237 ONGs atribuídas (offset=0)
-[Worker-1] === SERIAL === 25 requisições de login
+[Worker-1] OK   Req  10/25  lat=  81ms  throughput=3.1 req/s
+[Worker-1] OK   Req  25/25  lat=  72ms  throughput=3.3 req/s
 
-[Worker-1] OK   Req   10/25  lat=   81ms  throughput=3.1 req/s
-[Worker-1] OK   Req   20/25  lat=   65ms  throughput=3.4 req/s
-[Worker-1] OK   Req   25/25  lat=   72ms  throughput=3.3 req/s
-
-════════════════════════════════════════════════════════════
-  RELATÓRIO FINAL — Worker-1 | Modo: SERIAL
-────────────────────────────────────────────────────────────
   Requisições  : 25
   Throughput   : 3.3 req/s
-  Latência Avg : 90.3 ms
-  Latência Min : 56.8 ms
-  Latência Max : 143.5 ms
-  Latência p50 : 62.9 ms
-  Latência p95 : 131.2 ms
-  Latência p99 : 141.8 ms
+  Latência Avg : 90.3 ms  |  p99: 141.8 ms
 ════════════════════════════════════════════════════════════
 ```
 
-### Resultados obtidos (950 ONGs reais, banco com rounds=4)
+### Resultados obtidos (950 ONGs, rounds=4)
 
-| Container | Modo | Reqs | Throughput | Lat. Avg | Lat. p99 |
-|---|---|---|---|---|---|
-| worker_1 | Serial | 237 | 11.1 req/s | 90 ms | 654 ms |
-| worker_2 | Serial | 237 | 11.7 req/s | 86 ms | 308 ms |
-| worker_3 | Concorrente (5 threads) | 237 | 5.9 req/s | 169 ms | 362 ms |
-| worker_4 | Concorrente (10 threads) | 239 | 4.3 req/s | 231 ms | 354 ms |
-| **Total distribuído** | — | **950** | **~33 req/s** | — | — |
+| Container | Modo | Throughput | Lat. Avg | Lat. p99 |
+|---|---|---|---|---|
+| worker_1 | Serial | 11.1 req/s | 90 ms | 654 ms |
+| worker_2 | Serial | 11.7 req/s | 86 ms | 308 ms |
+| worker_3 | Concorrente (5 threads) | 5.9 req/s | 169 ms | 362 ms |
+| worker_4 | Concorrente (10 threads) | 4.3 req/s | 231 ms | 354 ms |
+| **Total** | — | **~33 req/s** | — | — |
 
-**Comparação com execução serial pura (1 processo, sem Docker):** 2.6 req/s
-**Ganho com distribuição:** ~12.7× mais throughput
-
-**Por que serial por worker supera concorrente por worker?**
-O servidor tem 2 CPUs e bcrypt satura CPU. Quando worker_4 abre 10 threads, todas competem pelos mesmos 2 núcleos do servidor — o Semaphore(5) cria fila, aumentando latência. O worker serial envia uma requisição de cada vez, e o servidor processa sem espera de fila.
+> **Por que serial por worker supera concorrente?** bcrypt satura 1 CPU. Quando worker_4 abre 10 threads, todas competem pelos mesmos núcleos do servidor — o Semaphore cria fila e aumenta latência. O worker serial envia 1 requisição por vez, o servidor processa sem espera.
 
 ---
 
-## 7 — API HTTP (para distribuição)
+## 8 — API HTTP
 
 **Arquivo:** `connectongs/api_server.py`
 
-Usa `ThreadingHTTPServer` da biblioteca padrão (sem Flask, sem FastAPI). Cada requisição é tratada em uma thread separada.
-
-### Endpoints
+Usa `ThreadingHTTPServer` da biblioteca padrão — sem Flask, sem FastAPI. Cada requisição é tratada em thread separada.
 
 | Método | Rota | Descrição |
 |---|---|---|
 | `GET` | `/health` | Status do servidor (pid, uptime) |
 | `GET` | `/stats` | Contagem de registros no banco |
-| `GET` | `/users/ongs?limit=N&offset=O` | Paginação de ONGs para os workers |
+| `GET` | `/users/ongs?limit=N&offset=O` | Paginação de ONGs |
 | `GET` | `/users/restaurants` | Lista restaurantes |
-| `GET` | `/foods/available` | Alimentos disponíveis para reserva |
+| `GET` | `/foods/available` | Alimentos disponíveis |
 | `POST` | `/auth/register` | Cadastro de usuário |
 | `POST` | `/auth/login` | Login com Semaphore (throttle) |
 | `POST` | `/foods/add` | Cadastrar alimento |
 | `POST` | `/foods/reserve` | Reservar alimento com Lock |
 
-### Rodar o servidor localmente (sem Docker)
-
 ```bash
-# Terminal 1 — inicia o servidor na porta 8080
-python3 -m connectongs.api_server
+# Terminal 1 — inicia o servidor
+python -m connectongs.api_server
 
-# Terminal 2 — testa um endpoint
+# Terminal 2 — testa endpoints
 curl http://localhost:8080/health
 curl http://localhost:8080/stats
-curl http://localhost:8080/users/ongs?limit=5
-```
 
-### Exemplo de chamada de login via curl
-
-```bash
+# Login via curl
 curl -X POST http://localhost:8080/auth/login \
      -H "Content-Type: application/json" \
      -d '{"email":"ong0001@connectongs.dev","password":"Teste@1234"}'
-
-# Resposta:
 # {"success": true, "user_id": 2, "user_type": "ONG", "elapsed_ms": 85.3}
 ```
 
 ---
 
-## 8 — Banco de Dados (SQLite WAL)
+## 9 — Banco de Dados (SQLite WAL)
 
 **Arquivo:** `connectongs/database.py`
-
-### Por que SQLite aguenta múltiplos processos?
 
 ```sql
 PRAGMA journal_mode=WAL;      -- múltiplos leitores simultâneos com 1 escritor
@@ -477,29 +497,43 @@ PRAGMA busy_timeout=10000;    -- espera até 10s por lock em vez de falhar
 PRAGMA foreign_keys=ON;       -- integridade referencial ativa
 ```
 
-O modo WAL (Write-Ahead Log) permite que leituras e escritas aconteçam ao mesmo tempo. Sem WAL, qualquer `INSERT` bloquearia todas as `SELECT`.
+| Tabela | Propósito |
+|---|---|
+| `users` | Restaurantes e ONGs (email UNIQUE, password_hash, user_type) |
+| `foods` | Alimentos para doação (restaurant_id, expiry_date, status) |
+| `reservations` | Reservas — 1 ativa por alimento (UNIQUE INDEX) |
+| `notifications` | Mensagens enviadas para ONGs |
+| `audit_log` | Rastreabilidade de todas as operações (event_type, process_id) |
 
-### Schema
+**Índice crítico para consistência:**
 
-| Tabela | Colunas principais | Propósito |
-|---|---|---|
-| `users` | id, name, email (UNIQUE), password_hash, user_type, region | Restaurantes e ONGs |
-| `foods` | id, restaurant_id, name, category, quantity, expiry_date, status | Alimentos para doação |
-| `reservations` | id, food_id, ong_id, status | Reservas (1 ativa por alimento) |
-| `notifications` | id, user_id, message, read | Mensagens enviadas |
-| `audit_log` | id, event_type, user_id, details, process_id | Rastreabilidade (LGPD) |
-
-**Índice mais importante:**
 ```sql
 CREATE UNIQUE INDEX idx_unique_active_reservation
     ON reservations(food_id)
     WHERE status != 'CANCELADO';
 ```
-Garante que nunca existam duas reservas ativas para o mesmo alimento — mesmo em ambiente distribuído, onde o `Lock` de memória não funciona.
+
+Garante que nunca existam duas reservas ativas para o mesmo alimento — inclusive em ambiente distribuído, onde o `Lock` de memória não funciona entre containers.
 
 ---
 
-## 9 — Fluxo Completo de uma Reserva
+## 10 — Evidências de Paralelismo na Saída
+
+Ao rodar qualquer cenário, os logs mostram PIDs diferentes operando ao mesmo tempo:
+
+```
+[11:35:22.820] [PID 13256] Disparando 500 logins via Pool (100 workers)...
+[11:35:23.100] [PID 17100] → ONG 0001 — ADQUIRIDO → bcrypt → LIBERADO
+[11:35:23.102] [PID  6328] → ONG 0002 — ADQUIRIDO → bcrypt → LIBERADO
+[11:35:23.103] [PID 18200] → ONG 0003 — ADQUIRIDO → bcrypt → LIBERADO
+[11:35:28.344] [PID 13256] Resultado: 500/500 logins OK | Tempo total: 5.52s
+```
+
+PIDs diferentes (`17100`, `6328`, `18200`) executando **no mesmo milissegundo** — isso é paralelismo real, não concorrência simulada.
+
+---
+
+## 11 — Fluxo Completo de uma Reserva
 
 ```
 ONG faz login
@@ -526,26 +560,12 @@ Lock.release() ──── seção crítica termina
 Notificação enfileirada na Queue
     │
     ▼
-NotificationWorker (Process separado) persiste no banco
+NotificationWorker (Process separado, PID diferente) persiste no banco
 ```
 
 ---
 
-## 10 — Evidências de Paralelismo na Saída
-
-Ao rodar qualquer cenário, os logs mostram PIDs diferentes operando ao mesmo tempo:
-
-```
-[13:56:44.456] [PID 18633] [SUCCESS] Login OK → ONG Solidária 01 [PID 18633]
-[13:56:44.458] [PID 18634] [SUCCESS] Login OK → ONG Solidária 03 [PID 18634]
-[13:56:44.837] [PID 18633] [SUCCESS] Login OK → ONG Solidária 02 [PID 18633]
-```
-
-Dois processos com PIDs diferentes (`18633` e `18634`) executando **no mesmo milissegundo** — isso é paralelismo real, não concorrência simulada.
-
----
-
-## 11 — Variáveis de Ambiente
+## 12 — Variáveis de Ambiente
 
 | Variável | Padrão | Descrição |
 |---|---|---|
@@ -559,7 +579,7 @@ Dois processos com PIDs diferentes (`18633` e `18634`) executando **no mesmo mil
 
 ---
 
-## 12 — Dependências
+## 13 — Dependências
 
 ```
 bcrypt==4.2.1
@@ -574,39 +594,51 @@ Todo o restante usa a **biblioteca padrão do Python 3.10+**:
 | `http.server` | ThreadingHTTPServer (API distribuída) |
 | `threading` | Threads concorrentes no worker_client |
 | `urllib.request` | Requisições HTTP (sem requests) |
-| `os`, `platform` | Detecção de CPUs via /proc/cpuinfo |
+| `os`, `platform` | Detecção de CPUs |
+
+**Dependências opcionais** (para relatórios e apresentação):
+
+```bash
+pip install python-pptx matplotlib     # para gerar_apresentacao.py
+# benchmark_dashboard.py não precisa de dependências extras
+```
 
 ---
 
 ## Referência Rápida de Comandos
 
 ```bash
-# ── Setup inicial ──────────────────────────────────────────
-pip install -r requirements.txt       # instala bcrypt
-python3 seed_database.py              # cria 1000 usuários
+# ── Setup ──────────────────────────────────────────────────
+pip install -r requirements.txt              # instala bcrypt
+python seed_database.py                      # cria 1000 usuários
+python seed_database.py --status             # verifica banco
+python seed_database.py --reset              # apaga e recria
 
-# ── Simulações de paralelismo ──────────────────────────────
-python3 main.py                       # menu interativo
-python3 main.py --auto                # todos os 5 cenários
+# ── Simulações ─────────────────────────────────────────────
+python -X utf8 main.py                       # menu interativo (10 usuários)
+python -X utf8 main.py --auto                # todos os cenários automático
+python -X utf8 main.py --users 500 --sem 10 --auto   # 500 usuários
+python -X utf8 main.py --sysinfo             # CPUs e threads do sistema
 
-# ── Informações do sistema ─────────────────────────────────
-python3 main.py --sysinfo             # CPUs e threads
+# ── Benchmark ──────────────────────────────────────────────
+python -X utf8 main.py --benchmark           # serial vs concorrente (10 ops)
+python -X utf8 benchmark_runner.py           # benchmark alternativo
 
-# ── Benchmark local ────────────────────────────────────────
-python3 benchmark_runner.py           # serial vs concorrente
-python3 main.py --benchmark           # mesmo benchmark via menu
+# ── Dashboard HTML ─────────────────────────────────────────
+python -X utf8 benchmark_dashboard.py        # gera e abre dashboard.html
+python -X utf8 benchmark_dashboard.py --users 100 --sem 10
 
-# ── API server (para testes locais) ───────────────────────
-python3 -m connectongs.api_server     # sobe na porta 8080
+# ── Apresentação ───────────────────────────────────────────
+python -X utf8 gerar_apresentacao.py         # gera PPTX (18 slides) + roteiro
 
-# ── Benchmark distribuído (Docker) ────────────────────────
-nano .env                             # edita TOTAL_REQUESTS
-docker compose up --build             # roda tudo
-docker compose logs -f                # acompanha em tempo real
+# ── API server local ───────────────────────────────────────
+python -m connectongs.api_server             # sobe na porta 8080
+curl http://localhost:8080/health
+
+# ── Docker distribuído ─────────────────────────────────────
+echo "TOTAL_REQUESTS=200" > .env
+docker compose up --build                    # seed + api + 4 workers
+docker compose logs -f                       # acompanha em tempo real
 docker compose logs --no-color > resultado.txt
-docker compose down -v                # limpa tudo
-
-# ── Banco de dados ─────────────────────────────────────────
-python3 seed_database.py --status     # quantos usuários existem
-python3 seed_database.py --reset      # apaga e recria tudo
+docker compose down -v                       # limpa tudo
 ```

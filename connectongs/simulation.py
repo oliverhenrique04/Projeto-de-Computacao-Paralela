@@ -93,20 +93,28 @@ def seed_food(restaurant_id: int, name: str = None,
 
 # ─── CENÁRIO 1: Logins simultâneos com Semáforo ───────────────────────────────
 
-def cenario_logins_simultaneos(users: list):
-    log.sep("CENÁRIO 1 — Login Simultâneo (Semáforo)")
-    log.sim("10 usuários tentam logar ao mesmo tempo.")
-    log.sim("Semáforo = 5 → no máximo 5 autenticações ocorrem em paralelo.")
-
-    semaphore = multiprocessing.Semaphore(5)
+def cenario_logins_simultaneos(users: list, n_concurrent: int = None,
+                               sem_limit: int = 5):
     ongs = [u for u in users if u['user_type'] == 'ONG']
-    credentials = [(u['email'], 'Senha@123') for u in ongs]
+    if n_concurrent:
+        ongs = ongs[:n_concurrent]
+    n = len(ongs)
 
-    log.sim(f"Disparando {len(credentials)} logins simultâneos via Pool...")
+    log.sep("CENÁRIO 1 — Login Simultâneo (Semáforo)")
+    log.sim(f"{n} usuários tentam logar ao mesmo tempo.")
+    log.sim(f"Semáforo = {sem_limit} → no máximo {sem_limit} autenticações ocorrem em paralelo.")
+
+    semaphore = multiprocessing.Semaphore(sem_limit)
+    # Usa a senha do dict se existir (banco seed usa Teste@1234, seed_users usa Senha@123)
+    credentials = [(u['email'], u.get('_password', 'Senha@123')) for u in ongs]
+
+    # Limita processos do pool a no máximo 100 para não estourar memória no Windows
+    pool_size = min(len(credentials), 100)
+    log.sim(f"Disparando {len(credentials)} logins simultâneos via Pool ({pool_size} workers)...")
     inicio = time.time()
 
     with multiprocessing.Pool(
-        processes=len(credentials),
+        processes=pool_size,
         initializer=_init_semaphore,
         initargs=(semaphore,)
     ) as pool:
@@ -119,15 +127,20 @@ def cenario_logins_simultaneos(users: list):
     log.success(
         f"Resultado: {ok}/{len(credentials)} logins OK | "
         f"Tempo total: {elapsed:.2f}s | "
-        f"Semáforo limitou a 5 simultâneos"
+        f"Semáforo limitou a {sem_limit} simultâneos"
     )
 
 
 # ─── CENÁRIO 2: Corrida por alimento (race condition) ─────────────────────────
 
-def cenario_corrida_alimento(users: list, restaurant_id: int):
-    log.sep("CENÁRIO 2 — Race Condition: 8 ONGs × 1 Alimento")
-    log.sim("8 ONGs tentam reservar o MESMO alimento simultaneamente.")
+def cenario_corrida_alimento(users: list, restaurant_id: int,
+                             n_concurrent: int = None):
+    ongs_all = [u for u in users if u['user_type'] == 'ONG']
+    n = min(n_concurrent or 8, len(ongs_all))
+    n = max(2, n)  # minimo 2 para ter sentido
+
+    log.sep(f"CENÁRIO 2 — Race Condition: {n} ONGs × 1 Alimento")
+    log.sim(f"{n} ONGs tentam reservar o MESMO alimento simultaneamente.")
     log.sim("Apenas 1 deve ser confirmada. Demais recebem 409 Conflict.")
 
     food = seed_food(restaurant_id, name="Pizza Margherita (última unidade!)")
@@ -137,14 +150,14 @@ def cenario_corrida_alimento(users: list, restaurant_id: int):
     )
 
     lock = multiprocessing.Lock()
-    ongs = [u for u in users if u['user_type'] == 'ONG'][:8]
+    ongs = ongs_all[:n]
     args = [(u['id'], food['id'], u['name']) for u in ongs]
 
     log.sim("LARGADA! Todas as 8 ONGs tentando ao mesmo tempo...")
     inicio = time.time()
 
     with multiprocessing.Pool(
-        processes=8,
+        processes=n,
         initializer=_init_lock,
         initargs=(lock,)
     ) as pool:

@@ -35,6 +35,48 @@ if __name__ == '__main__':
     from connectongs import simulation as sim
     from connectongs import benchmark as bm
     from connectongs import logger as log
+    from connectongs import auth as _auth
+
+    # ── Argumentos configuráveis ───────────────────────────────────────────
+    def _get_arg(flag, default, cast=int):
+        if flag in sys.argv:
+            try:
+                return cast(sys.argv[sys.argv.index(flag) + 1])
+            except (IndexError, ValueError):
+                pass
+        return default
+
+    N_USERS   = _get_arg('--users', None)   # None = usa seed_users() (10 ONGs)
+    SEM_LIMIT = _get_arg('--sem',   5)      # limite do semáforo
+
+    def _load_users():
+        """Carrega usuários: N ONGs do banco (--users N) ou os 11 do seed."""
+        db.init_db()
+        if N_USERS is not None:
+            n = max(1, min(950, N_USERS))
+            log.info(f"Carregando {n} ONGs do banco para os cenários...")
+            all_ongs = _auth.get_all_ongs()
+            if not all_ongs:
+                log.warning("Banco vazio. Rodando seed_database.py primeiro...")
+                import subprocess
+                subprocess.run([sys.executable, '-X', 'utf8', 'seed_database.py'],
+                               check=True)
+                all_ongs = _auth.get_all_ongs()
+            # Garante que ongs têm user_type e senha correta do banco seed
+            ongs = [{**o, 'user_type': 'ONG', '_password': 'Teste@1234'}
+                    for o in all_ongs[:n]]
+            # Pega 1 restaurante do banco
+            with db.cursor() as cur:
+                cur.execute(
+                    "SELECT id, name, email, user_type, region "
+                    "FROM users WHERE user_type='RESTAURANTE' LIMIT 1"
+                )
+                row = cur.fetchone()
+            restaurant = dict(row) if row else sim.seed_users()[0]
+            users = [restaurant] + ongs
+        else:
+            users = sim.seed_users()
+        return users
 
     BANNER = r"""
   ╔══════════════════════════════════════════════════════════════════╗
@@ -48,19 +90,18 @@ if __name__ == '__main__':
     def run_all():
         log.sim(f"PID principal: {os.getpid()}")
         log.info("Inicializando banco de dados...")
-        db.init_db()
-
-        log.info("Criando usuários de teste (idempotente)...")
-        users      = sim.seed_users()
+        users      = _load_users()
         restaurant = next(u for u in users if u['user_type'] == 'RESTAURANTE')
         ongs_count = sum(1 for u in users if u['user_type'] == 'ONG')
         log.success(
             f"Setup: {ongs_count} ONGs + 1 Restaurante prontos. "
             f"Banco: {db.DB_PATH}"
         )
+        if N_USERS:
+            log.info(f"Modo configurado: {N_USERS} usuários | Semaphore({SEM_LIMIT})")
 
         time.sleep(0.3)
-        sim.cenario_logins_simultaneos(users)
+        sim.cenario_logins_simultaneos(users, sem_limit=SEM_LIMIT)
 
         time.sleep(0.3)
         sim.cenario_corrida_alimento(users, restaurant['id'])
@@ -78,16 +119,20 @@ if __name__ == '__main__':
         sim.print_report()
         log.success("Todas as simulações concluídas com sucesso.")
 
-    def run_benchmark():
+    def run_benchmark(n_users=None):
         """Executa benchmark serial vs concorrente com análise de speedup."""
         sysinfo = bm.get_system_info()
         sysinfo.print_table()
 
         log.info("Preparando dados para benchmark...")
         db.init_db()
-        users = sim.seed_users()
-        ongs  = [u for u in users if u['user_type'] == 'ONG']
-        credentials = [(u['email'], 'Senha@123') for u in ongs]
+        if n_users and n_users > 10:
+            all_ongs = _auth.get_all_ongs()
+            credentials = [(o['email'], 'Teste@1234') for o in all_ongs[:n_users]]
+        else:
+            users = sim.seed_users()
+            ongs  = [u for u in users if u['user_type'] == 'ONG']
+            credentials = [(u['email'], 'Senha@123') for u in ongs]
         n_ops = len(credentials)
 
         log.sep("BENCHMARK — Login de Usuários (bcrypt CPU-bound)")
@@ -124,21 +169,59 @@ if __name__ == '__main__':
         bm.print_comparison_table(results)
         bm.print_distributed_instructions()
 
+    def _ask_int(prompt, default, lo, hi):
+        """Lê um inteiro do usuário com validação e valor padrão."""
+        while True:
+            try:
+                raw = input(f"  {prompt} ({lo}–{hi}, Enter={default}): ").strip()
+                if raw == '':
+                    return default
+                n = int(raw)
+                if lo <= n <= hi:
+                    return n
+                print(f"  Digite um número entre {lo} e {hi}.")
+            except ValueError:
+                print("  Número inválido.")
+
     def menu_interativo():
-        db.init_db()
-        users      = sim.seed_users()
+        users      = _load_users()
         restaurant = next(u for u in users if u['user_type'] == 'RESTAURANTE')
+
+        # Total real de ONGs no banco (pode ser 950 se seed_database.py foi rodado)
+        with db.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS c FROM users WHERE user_type='ONG'")
+            total_ongs_db = cur.fetchone()['c']
+        max_ongs = max(sum(1 for u in users if u['user_type'] == 'ONG'), total_ongs_db)
+        log.info(f"{total_ongs_db} ONGs disponíveis no banco | Semaphore({SEM_LIMIT}) padrão")
+
+        def _users_com_n(n):
+            """Retorna lista com exatamente n ONGs, buscando do banco se necessário."""
+            ongs_loaded = [u for u in users if u['user_type'] == 'ONG']
+            if n <= len(ongs_loaded):
+                return [restaurant] + ongs_loaded[:n]
+            all_ongs = _auth.get_all_ongs()
+            ongs = [{**o, 'user_type': 'ONG', '_password': 'Teste@1234'}
+                    for o in all_ongs[:n]]
+            return [restaurant] + ongs
+
+        def _run_cenario1():
+            n   = _ask_int("Quantos ONGs para logar", min(10, max_ongs), 1, max_ongs)
+            sem = _ask_int("Limite do Semaphore", SEM_LIMIT, 1, 50)
+            sim.cenario_logins_simultaneos(_users_com_n(n), n_concurrent=n, sem_limit=sem)
+
+        def _run_cenario2():
+            n = _ask_int("Quantos ONGs competem pelo alimento", min(8, max_ongs), 2, max_ongs)
+            sim.cenario_corrida_alimento(_users_com_n(n), restaurant['id'], n_concurrent=n)
+
+        def _run_cenario3():
+            n = _ask_int("Quantos ONGs recebem notificação", min(10, max_ongs), 1, max_ongs)
+            sim.cenario_notificacoes_lote(_users_com_n(n), sim.seed_food(restaurant['id']))
 
         opcoes = {
             '1': ("Rodar TODAS as simulações",                  run_all),
-            '2': ("Cenário 1 — Logins simultâneos",
-                  lambda: sim.cenario_logins_simultaneos(users)),
-            '3': ("Cenário 2 — Race condition (corrida por alimento)",
-                  lambda: sim.cenario_corrida_alimento(users, restaurant['id'])),
-            '4': ("Cenário 3 — Notificações em paralelo (Pool)",
-                  lambda: sim.cenario_notificacoes_lote(
-                      users, sim.seed_food(restaurant['id'])
-                  )),
+            '2': (f"Cenário 1 — Logins simultâneos (1–{max_ongs} ONGs, Semaphore ajustável)", _run_cenario1),
+            '3': (f"Cenário 2 — Race condition (2–{max_ongs} ONGs × 1 alimento)",             _run_cenario2),
+            '4': (f"Cenário 3 — Notificações em paralelo (1–{max_ongs} ONGs)",                _run_cenario3),
             '5': ("Cenário 4 — Fila + worker assíncrono",
                   lambda: sim.cenario_fila_notificacoes(users)),
             '6': ("Cenário 5 — Worker de expiração automática",
@@ -146,8 +229,8 @@ if __name__ == '__main__':
             '7': ("Ver relatório do banco de dados",            sim.print_report),
             '8': ("Informações do sistema (CPUs / Threads)",
                   lambda: bm.get_system_info().print_table()),
-            '9': ("Benchmark — Serial vs Concorrente vs Distribuído",
-                  run_benchmark),
+            '9': (f"Benchmark — Serial vs Concorrente (1–{max_ongs} usuários)",
+                  lambda: run_benchmark(_ask_int("Quantos usuários para o benchmark", min(10, max_ongs), 1, max_ongs))),
         }
 
         while True:
